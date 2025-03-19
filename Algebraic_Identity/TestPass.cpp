@@ -36,8 +36,53 @@ struct TestPass: PassInfoMixin<TestPass> {
   // Main entry point, takes IR unit to run the pass on (&F) and the
   // corresponding pass manager (to be queried if need be)
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
-
-  	errs() << F.getName() << "\n ";
+    bool changes = true;
+    for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
+      BasicBlock &BB = *B;
+      while(changes){
+        changes = false;
+        for(auto I = BB.begin(), IE = BB.end(); I != IE; ++I) {
+          Instruction &Instr = *I;
+          if(Instr.getOpcode() == Instruction::Add) {
+            if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
+              if(Op1->isZero()) {
+                Instr.replaceAllUsesWith(Instr.getOperand(0));
+                Instr.eraseFromParent();
+                changes = true;
+                break;
+              }
+            }
+          } else if (Instr.getOpcode() == Instruction::Mul){
+            if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
+              if(Op1->isOne()) {
+                Instr.replaceAllUsesWith(Instr.getOperand(0));
+                Instr.eraseFromParent();
+                changes = true;
+                break;
+              }
+            }
+          } else if (Instr.getOpcode() == Instruction::Sub){
+            if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
+              if(Op1->isZero()) {
+                Instr.replaceAllUsesWith(Instr.getOperand(0));
+                Instr.eraseFromParent();
+                changes = true;
+                break;
+              }
+            }
+          } else if (Instr.getOpcode() == Instruction::SDiv){
+            if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
+              if(Op1->isOne()) {
+                Instr.replaceAllUsesWith(Instr.getOperand(0));
+                Instr.eraseFromParent();
+                changes = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
   	return PreservedAnalyses::all();
 }
 
