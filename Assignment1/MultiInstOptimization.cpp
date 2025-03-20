@@ -36,8 +36,35 @@ struct MultiInstOptimization: PassInfoMixin<MultiInstOptimization> {
   // Main entry point, takes IR unit to run the pass on (&F) and the
   // corresponding pass manager (to be queried if need be)
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
-
-  	errs() << F.getName() << "\n ";
+    bool changes = true;
+    for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
+      BasicBlock &BB = *B;
+      while(changes){
+        changes = false;
+        for (auto I = BB.begin(), IE = --BB.end(); I != IE; ++I) {
+          Instruction &Instr = *I;
+          auto Next = std::next(I);
+          while (Next != BB.end()) {
+            Instruction &InstrNext = *Next;
+            if (auto *BinOp1 = dyn_cast<BinaryOperator>(&Instr)) {
+              if (auto *BinOp2 = dyn_cast<BinaryOperator>(&InstrNext)) {
+                if ((BinOp1->getOpcode() == Instruction::Add && BinOp2->getOpcode() == Instruction::Sub) ||
+                    (BinOp1->getOpcode() == Instruction::Sub && BinOp2->getOpcode() == Instruction::Add)) {
+                    if (BinOp1 == BinOp2->getOperand(0) &&
+                        BinOp1->getOperand(1) == BinOp2->getOperand(1)) {
+                        InstrNext.replaceAllUsesWith(BinOp1);
+                        InstrNext.eraseFromParent();
+                        changes = true;
+                        break;
+                    }
+                }
+              }
+            }
+            ++Next;
+          }
+        }
+      }
+    }
   	return PreservedAnalyses::all();
 }
 

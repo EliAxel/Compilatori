@@ -52,16 +52,16 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
               break;
             } else if (auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if (Op1) {
-                uint64_t Val = Op1->getValue().getZExtValue();
-                uint64_t ClosestPowerOf2 = 1ULL << Log2_64(Val);
-                uint64_t ClosestPowerOf2s = 1ULL << (Log2_64(Val)+1ULL);
-                uint64_t Difference = Val - ClosestPowerOf2;
-                uint64_t Difference2 = Val - ClosestPowerOf2s;
+                uint32_t Val = Op1->getValue().getZExtValue();
+                uint32_t ClosestPowerOf2 = 1UL << Log2_32(Val);
+                uint32_t ClosestPowerOf2s = 1UL << (Log2_32(Val)+1UL);
+                uint32_t Difference = Val - ClosestPowerOf2;
+                uint32_t Difference2 = Val - ClosestPowerOf2s;
           
                 if (Difference - 1 == 0) {
                   auto *ShiftInstr = BinaryOperator::Create(
                       Instruction::Shl, Instr.getOperand(0),
-                      ConstantInt::get(Instr.getType(), Log2_64(ClosestPowerOf2)), "", &Instr);
+                      ConstantInt::get(Instr.getType(), Log2_32(ClosestPowerOf2)), "", &Instr);
           
                   auto *AddInstr = BinaryOperator::Create(
                       Instruction::Add, ShiftInstr,
@@ -74,7 +74,7 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                 } else if (Difference2 + 1 == 0){
                   auto *ShiftInstr = BinaryOperator::Create(
                       Instruction::Shl, Instr.getOperand(0),
-                      ConstantInt::get(Instr.getType(), Log2_64(ClosestPowerOf2s)), "", &Instr);
+                      ConstantInt::get(Instr.getType(), Log2_32(ClosestPowerOf2s)), "", &Instr);
           
                   auto *SubInstr = BinaryOperator::Create(
                       Instruction::Sub,ShiftInstr ,Instr.getOperand(0) , "", &Instr);
