@@ -35,6 +35,7 @@ endif()
 #===============================================================================
 add_library(AlgebraicIdentity SHARED AlgebraicIdentity.cpp)
 add_library(StrenghtReduction SHARED StrenghtReduction.cpp)
+add_library(MultiInstOptimization SHARED MultiInstOptimization.cpp)
 
 # Allow undefined symbols in shared objects on Darwin (this is the default
 # behaviour on Linux)
