@@ -36,13 +36,19 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
   // Main entry point, takes IR unit to run the pass on (&F) and the
   // corresponding pass manager (to be queried if need be)
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
+    // il booleano changes serve per capire se ci sono stati cambiamenti e in caso positivo abilita nuovamente il while
+    // per controllare se ci sono altre ottimizzazioni da fare
     bool changes = true;
+    // ciclo for che scorre tutti i blocchi base della funzione
     for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
       BasicBlock &BB = *B;
       while(changes){
         changes = false;
+        //ciclo for che scorre tutte le istruzioni del blocco base
         for(auto I = BB.begin(), IE = BB.end(); I != IE; ++I) {
           Instruction &Instr = *I;
+          //se l'istruzione è una somma controllo se il secondo operando è 0
+          //se è vero allora sostituisco la somma con il primo operando
           if(Instr.getOpcode() == Instruction::Add) {
             if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if(Op1->isZero()) {
@@ -52,6 +58,8 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
                 break;
               }
             }
+          //se l'istruzione è una moltiplicazione controllo se il secondo operando è 1
+          //se è vero allora sostituisco la moltiplicazione con il primo operando
           } else if (Instr.getOpcode() == Instruction::Mul){
             if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if(Op1->isOne()) {
@@ -61,7 +69,9 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
                 break;
               }
             }
-          } else if (Instr.getOpcode() == Instruction::Sub){
+          //se l'istruzione è una sottrazione controllo se il secondo operando è 0
+          //se è vero allora sostituisco la sottrazione con il primo operando
+          }  else if (Instr.getOpcode() == Instruction::Sub){
             if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if(Op1->isZero()) {
                 Instr.replaceAllUsesWith(Instr.getOperand(0));
@@ -70,6 +80,8 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
                 break;
               }
             }
+          //se l'istruzione è una divisione controllo se il secondo operando è 1
+          //se è vero allora sostituisco la divisione con il primo operando
           } else if (Instr.getOpcode() == Instruction::SDiv){
             if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if(Op1->isOne()) {

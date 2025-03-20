@@ -36,22 +36,28 @@ struct MultiInstOptimization: PassInfoMixin<MultiInstOptimization> {
   // Main entry point, takes IR unit to run the pass on (&F) and the
   // corresponding pass manager (to be queried if need be)
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
+    // il booleano changes serve per capire se ci sono stati cambiamenti e in caso positivo abilita nuovamente il while
+    // per controllare se ci sono altre ottimizzazioni da fare
     bool changes = true;
+    //ci spostiamo all'interno di ogni blocco base della funzione
     for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
       BasicBlock &BB = *B;
       while(changes){
         changes = false;
+        //scorriamo tutte le istruzioni del blocco base
         for (auto I = BB.begin(), IE = --BB.end(); I != IE; ++I) {
           Instruction &Instr = *I;
           auto Next = std::next(I);
+          // scorriamo tutte le istruzioni successive per cercare le ottimizzazioni
           while (Next != BB.end()) {
             Instruction &InstrNext = *Next;
+            //se troviamo due istruzioni di somma e sottrazione o viceversa con gli stessi operandi
+            //possiamo sostituire la seconda istruzione con la prima
             if (auto *BinOp1 = dyn_cast<BinaryOperator>(&Instr)) {
               if (auto *BinOp2 = dyn_cast<BinaryOperator>(&InstrNext)) {
                 if ((BinOp1->getOpcode() == Instruction::Add && BinOp2->getOpcode() == Instruction::Sub) ||
                     (BinOp1->getOpcode() == Instruction::Sub && BinOp2->getOpcode() == Instruction::Add)) {
-                    if (BinOp1 == BinOp2->getOperand(0) &&
-                        BinOp1->getOperand(1) == BinOp2->getOperand(1)) {
+                    if (BinOp1 == BinOp2->getOperand(0) && BinOp1->getOperand(1) == BinOp2->getOperand(1)) {
                         InstrNext.replaceAllUsesWith(BinOp1);
                         InstrNext.eraseFromParent();
                         changes = true;

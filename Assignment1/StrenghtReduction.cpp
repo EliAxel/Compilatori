@@ -36,13 +36,19 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
   // Main entry point, takes IR unit to run the pass on (&F) and the
   // corresponding pass manager (to be queried if need be)
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
+    // il booleano changes serve per capire se ci sono stati cambiamenti e in caso positivo abilita nuovamente il while
+    // per controllare se ci sono altre ottimizzazioni da fare
     bool changes = true;
+    // scorro tutti i blocchi base della funzione
     for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
       BasicBlock &BB = *B;
       while(changes){
         changes = false;
+        //scorro tutte le istruzioni del blocco base
         for(auto I = BB.begin(), IE = BB.end(); I != IE; ++I) {
           Instruction &Instr = *I;
+          // se l'istruzione è una moltiplicazione controllo se il secondo operando è una costante e se è una potenza di 2
+          // se è vero allora sostituisco la moltiplicazione con uno shift a sinistra
           if(Instr.getOpcode() == Instruction::Mul) {
             auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1));
             if (Op1 && Op1->getValue().isPowerOf2()) {
@@ -50,14 +56,20 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
               Instr.eraseFromParent();
               changes = true;
               break;
+              // se non è una diretta potenza di 2 controllo se il secondo operando è una costante e
+              // se è un numero che si può scrivere come somma di potenze di 2
+              // se è vero allora sostituisco la moltiplicazione con uno shift a sinistra e una somma
             } else if (auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if (Op1) {
+                // utilizzo di valori in 32 bit secondo la scelta di utilizzo nel primo semestre di Compilatori
                 uint32_t Val = Op1->getValue().getZExtValue();
+                // funzione che calcola il logaritmo in base 2 di un numero più piccolo o uguale al numero passato come parametro
                 uint32_t ClosestPowerOf2 = 1UL << Log2_32(Val);
+                // funzione che calcola il logaritmo in base 2 di un numero meno grande o uguale al numero passato come parametro
                 uint32_t ClosestPowerOf2s = 1UL << (Log2_32(Val)+1UL);
                 uint32_t Difference = Val - ClosestPowerOf2;
                 uint32_t Difference2 = Val - ClosestPowerOf2s;
-          
+                //se la differenza è di uno allora posso scrivere il numero come somma di potenze di 2
                 if (Difference - 1 == 0) {
                   auto *ShiftInstr = BinaryOperator::Create(
                       Instruction::Shl, Instr.getOperand(0),
@@ -71,6 +83,9 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                   Instr.eraseFromParent();
                   changes = true;
                   break;
+                  // se la differenza non è di uno controllo se il secondo operando è una costante e
+                  // se è un numero che si può scrivere come differenza di potenze di 2
+                  // se è vero allora sostituisco la moltiplicazione con uno shift a sinistra e una sottrazione
                 } else if (Difference2 + 1 == 0){
                   auto *ShiftInstr = BinaryOperator::Create(
                       Instruction::Shl, Instr.getOperand(0),
@@ -86,6 +101,8 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                 }
               }
             }
+            // se non è una moltiplicazione controllo se l'istruzione è una divisione e se il secondo operando è una costante e se è una potenza di 2
+            // se è vero allora sostituisco la divisione con uno shift aritmetico a destra
           } else if (Instr.getOpcode() == Instruction::SDiv){
             if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if(Op1 && Op1->getValue().isPowerOf2()) {
