@@ -24,7 +24,6 @@
 #include "llvm/IR/Dominators.h"
 
 using namespace llvm;
-
 //-----------------------------------------------------------------------------
 // TestPass implementation
 //-----------------------------------------------------------------------------
@@ -32,9 +31,23 @@ using namespace llvm;
 // everything in an anonymous namespace.
 
 namespace {
-// funzione atta a controllare se un valore è spostabile nel preheader
-bool isMovable(Value *I) {
-  if (isa<BinaryOperator>(I) || isa<CastInst>(I) || isa<SelectInst>(I) || isa<GetElementPtrInst>(I)) {
+bool isASafeInstruction(Value *I);
+bool dominatesAllUses(Instruction *I, DominatorTree &DT, Loop *L);
+bool isDeadAfterLoop(Instruction *I, Loop *L);
+bool isOperLoopInvariant(Instruction &I, Loop *L, DominatorTree &DT, 
+  std::set<Instruction*> &LoopInvariantInst, 
+  std::set<Instruction*> &isChecked);
+bool IsLoopInvariant(Instruction &I, Loop *L, DominatorTree &DT,
+  std::set<Instruction*> &LoopInvariantInst, 
+  std::set<Instruction*> &isChecked);
+
+// funzione atta a controllare se un valore è considerabile loop invariant
+bool isASafeInstruction(Value *I) {
+  if (isa<BinaryOperator>(I)    || 
+      isa<CastInst>(I)          || 
+      isa<SelectInst>(I)        || 
+      isa<GetElementPtrInst>(I) ||
+      isa<CmpInst>(I)){
     return true;
   }
   return false;
@@ -46,13 +59,13 @@ bool dominatesAllUses(Instruction *I, DominatorTree &DT, Loop *L) {
   for (User *U : I->users()) {
     // se l'uso è un'istruzione
     if (Instruction *UserInst = dyn_cast<Instruction>(U)) {
-      BasicBlock *UserBB = UserInst->getParent();
       // se l'uso è in un blocco che non è nel loop il controllo è superfluo
-      if (!L->contains(UserBB))
+      if (!L->contains(UserInst->getParent())) {
         continue;
-      // se invece è interno e il blocco non è dominato dall'istruzione
-      // allora l'istruzione non è spostabile
-      if (!DT.dominates(I->getParent(), UserBB)) {
+      }
+        // se invece è interno e l'istruzione loop invariant non è dominata dall'istruzione
+        // allora l'istruzione loop invariant non è spostabile
+      if (!DT.dominates(I, UserInst)) {
         return false;
       }
     }
@@ -71,6 +84,55 @@ bool isDeadAfterLoop(Instruction *I, Loop *L) {
   }
   return true;
 }
+// controlla un operando dell'istruzione e dice se è loop invariant o no
+bool isOperLoopInvariant(Value &V, Loop *L, DominatorTree &DT,
+  std::set<Instruction*> &LoopInvariantInst,
+  std::set<Instruction*> &isChecked) {
+  // Se è una costante o un argomento, è loop invariant
+  if (isa<Constant>(&V) || isa<Argument>(&V)) {
+    return true;
+  }  
+  // se non è un istruzione allora non è loop invariant
+  if (Instruction *Inst = dyn_cast<Instruction>(&V)) {
+  // Se già marcata come invariant, ritorna true
+    if (LoopInvariantInst.count(Inst)) {
+      return true;
+    }
+    // Se già controllata ma non invariant, evitiamo ricorsioni infinite
+    if (isChecked.count(Inst)) {
+      return false;
+    }
+    isChecked.insert(Inst);
+    // Se non è dentro il loop, è considerata loop invariant
+    if (!L->contains(Inst)) {
+      return true;
+    }
+
+    // Chiedi se questa istruzione è loop invariant ricorsivamente ai suoi operandi
+    if (IsLoopInvariant(*Inst, L, DT, LoopInvariantInst, isChecked)) {
+      LoopInvariantInst.insert(Inst);
+      return true;
+    }
+  }
+  return false;
+}
+// controlla se un'istruzione è loop invariant
+bool IsLoopInvariant(Instruction &I, Loop *L, DominatorTree &DT,
+  std::set<Instruction*> &LoopInvariantInst,
+  std::set<Instruction*> &isChecked) {
+  // Se non è sicura, non può essere loop invariant
+  if (!isASafeInstruction(&I)) {
+    return false;
+  }
+  // Tutti gli operandi devono essere loop invariant
+  for (unsigned i = 0; i < I.getNumOperands(); ++i) {
+    if (!isOperLoopInvariant(*I.getOperand(i), L, DT, LoopInvariantInst, isChecked)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 
 // New PM implementation
 struct TestPass: PassInfoMixin<TestPass> {
@@ -87,48 +149,29 @@ struct TestPass: PassInfoMixin<TestPass> {
     }
     // per ogni loop della funzione
     for(auto &L : LI) {
-      std::vector<Instruction*> LoopInvariantInst;
-      // qui vengono raccolte le istruzioni che sono loop invariant
+      std::set<Instruction*> LoopInvariantInst;
+      std::set<Instruction*> isChecked;
+      // aggiungo ad una lista tutte le istruzioni loop invariant
       for(auto &BB : L->blocks()) {
         for(auto &I : *BB) {
-          // se l'istruzione è spostabile e non è un'istruzione di terminazione
-          if (isMovable(&I)) {
-            unsigned int isLoopInvariant = 0; // entrambi i contatori se alla fine del ciclo non sono uguali allora non tutti gli operandi 
-            unsigned int i = 0;               // sono loop invariant, e di conseguenza l'istruzione non è loop invariant
-            for (auto Iter = I.op_begin(); Iter != I.op_end(); ++Iter){
-              Value *Operand = *Iter;
-              if (isa<Instruction>(Operand)) {
-                Instruction *OpInst = cast<Instruction>(Operand);
-                if ((OpInst->getParent() && !L->contains(OpInst->getParent())) || is_contained(LoopInvariantInst,OpInst)) {
-                  isLoopInvariant++;
-                }
-              } else if (isa<Constant>(Operand)) {
-                isLoopInvariant++;
-              }
-              i++;
-            }
-            if (isLoopInvariant == i) {
-              if(!is_contained(LoopInvariantInst, &I)) 
-                LoopInvariantInst.push_back(&I);
-            }
+          if(IsLoopInvariant(I, L, DT, LoopInvariantInst, isChecked) && dominatesAllUses(&I, DT, L)) {
+            LoopInvariantInst.insert(&I);            
           }
         }
       }
       // calcolo di tutti i blocchi di uscita del loop
-      std::vector<BasicBlock*> ExitBlocks = {};
+      std::set<BasicBlock*> ExitBlocks = {};
       for(auto &BB : L->blocks()) {
         for (auto *Succ : successors(BB)) {
           if (!L->contains(Succ)) {
-              if (!is_contained(ExitBlocks, Succ)) {
-                ExitBlocks.push_back(Succ);
-              }
+            ExitBlocks.insert(Succ);
             break;
           }
         }        
       }
       // per ogni istruzione loop invariant controlla se domina tutti i blocchi di uscita
       // e se domina tutti i suoi usi
-      for(auto *I : LoopInvariantInst){
+      for(auto *I : LoopInvariantInst) {
         bool dominatesAllExits = true;
         for (auto *ExitBB : ExitBlocks) {
           if (!DT.dominates(I, ExitBB)) {
@@ -138,7 +181,7 @@ struct TestPass: PassInfoMixin<TestPass> {
         }
         // se l'istruzione domina tutti i blocchi di uscita e tutti i suoi usi oppure è morta dopo il loop
         // allora l'istruzione può essere spostata nel preheader del loop
-        if ((dominatesAllExits || isDeadAfterLoop(I, L)) && dominatesAllUses(I, DT, L)) {
+        if ((dominatesAllExits || isDeadAfterLoop(I, L))) {
           BasicBlock *Preheader = L->getLoopPreheader();
           if (Preheader) {
             I->moveBefore(Preheader->getTerminator());
