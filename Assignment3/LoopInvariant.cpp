@@ -94,7 +94,11 @@ bool isOperLoopInvariant(Value &V, Loop *L, DominatorTree &DT,
   }  
   // se non è un istruzione allora non è loop invariant
   if (Instruction *Inst = dyn_cast<Instruction>(&V)) {
-  // Se già marcata come invariant, ritorna true
+    // Se non è dentro il loop, è considerata loop invariant
+    if (!L->contains(Inst)) {
+      return true;
+    }
+    // Se già marcata come invariant, ritorna true
     if (LoopInvariantInst.count(Inst)) {
       return true;
     }
@@ -102,17 +106,13 @@ bool isOperLoopInvariant(Value &V, Loop *L, DominatorTree &DT,
     if (isChecked.count(Inst)) {
       return false;
     }
-    isChecked.insert(Inst);
-    // Se non è dentro il loop, è considerata loop invariant
-    if (!L->contains(Inst)) {
-      return true;
-    }
 
     // Chiedi se questa istruzione è loop invariant ricorsivamente ai suoi operandi
     if (IsLoopInvariant(*Inst, L, DT, LoopInvariantInst, isChecked)) {
       LoopInvariantInst.insert(Inst);
       return true;
     }
+    isChecked.insert(Inst);
   }
   return false;
 }
