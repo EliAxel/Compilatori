@@ -14,7 +14,7 @@ std::set<std::pair<Loop*, Loop*>> getLoopCandidates(Function &F, FunctionAnalysi
   std::set<std::pair<Loop*, Loop*>> LoopCandidates;
   std::vector<Loop*> Loops(LI.begin(), LI.end());
   //TODO: da aggiungere
-  LoopCandidates.insert(std::make_pair(Loops[0], Loops[1]));
+  LoopCandidates.insert(std::make_pair(Loops[1], Loops[0]));
 
   return LoopCandidates;
 }
@@ -25,17 +25,38 @@ BasicBlock* getEntryPoint(Loop* L){
     return L->getLoopPreheader();
   }
 }
+bool isLoopAdjacent(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisManager &AM){
+  SmallVector<BasicBlock *, 4> EB;
+  bool isLoopAdj = false;
+  LPair.first->getExitBlocks(EB);
+  if (LPair.first->isGuarded()) {
+    errs() << "guard";
+    BasicBlock* Guard = LPair.first->getLoopGuardBranch()->getParent();
+    for (auto *Succ : successors(Guard)) {
+      for (auto *ExitBlock : EB) {
+        if (Succ == ExitBlock && Succ == getEntryPoint(LPair.second)) {
+          return true;
+        }
+      }
+    }
+  } else {
+    for(auto &E: EB){
+      if(E == getEntryPoint(LPair.second)){
+        return true;
+      }
+    }
+  }
+  return false;
+}
 bool isDomPostDom(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisManager &AM) {
   DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
   PostDominatorTree &PDT = AM.getResult<PostDominatorTreeAnalysis>(F);
-
   BasicBlock *FirstExit = LPair.first->getExitBlock();
   BasicBlock *SecondEntry = getEntryPoint(LPair.second);
 
   if (FirstExit && SecondEntry) {
     return DT.dominates(FirstExit, SecondEntry) && PDT.dominates(SecondEntry, FirstExit);
   }
-
   return false;
 }
 struct TestPass: PassInfoMixin<TestPass> {
@@ -43,31 +64,8 @@ struct TestPass: PassInfoMixin<TestPass> {
     std::set<std::pair<Loop*,Loop*>> LI = getLoopCandidates(F,AM);
     
     for (auto &LPair : LI) {
-      SmallVector<BasicBlock *, 4> EB;
-      bool isLoopAdj = false;
-      LPair.first->getExitBlocks(EB);
-      if (LPair.first->isGuarded()) {
-        errs() << "guard";
-        BasicBlock* Guard = LPair.first->getLoopGuardBranch()->getParent();
-        for (auto *Succ : successors(Guard)) {
-          for (auto *ExitBlock : EB) {
-            if (Succ == ExitBlock && Succ == getEntryPoint(LPair.second)) {
-              errs() << "loopadj";
-              isLoopAdj = true;
-            }
-          }
-        }
-      } else {
-        for(auto &E: EB){
-          if(E == getEntryPoint(LPair.second)){
-            errs() << "loopadj";
-            isLoopAdj = true;
-          }
-        }
-      }
-      if(isDomPostDom(LPair,F,AM)){
+      if(isLoopAdjacent(LPair,F,AM) && isDomPostDom(LPair,F,AM)){
         //TODO: fusione
-        errs() << "trovato";
       }
     }
     
