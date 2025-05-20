@@ -8,66 +8,100 @@
 
 using namespace llvm;
 namespace {
-//TODO: da aggiungere
-std::set<std::pair<Loop*, Loop*>> getLoopCandidates(Function &F, FunctionAnalysisManager &AM) {
-  LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
-  std::set<std::pair<Loop*, Loop*>> LoopCandidates;
-  std::vector<Loop*> Loops(LI.begin(), LI.end());
-  //TODO: da aggiungere
-  LoopCandidates.insert(std::make_pair(Loops[1], Loops[0]));
 
-  return LoopCandidates;
-}
-BasicBlock* getEntryPoint(Loop* L){
-  if(L->getLoopPreheader() == nullptr){
-    return L->getHeader();
-  } else {
-    return L->getLoopPreheader();
-  }
-}
-bool isLoopAdjacent(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisManager &AM){
-  SmallVector<BasicBlock *, 4> EB;
-  bool isLoopAdj = false;
-  LPair.first->getExitBlocks(EB);
-  if (LPair.first->isGuarded()) {
-    errs() << "guard";
-    BasicBlock* Guard = LPair.first->getLoopGuardBranch()->getParent();
-    for (auto *Succ : successors(Guard)) {
-      for (auto *ExitBlock : EB) {
-        if (Succ == ExitBlock && Succ == getEntryPoint(LPair.second)) {
-          return true;
-        }
-      }
-    }
-  } else {
-    for(auto &E: EB){
-      if(E == getEntryPoint(LPair.second)){
+bool isLoopAdjacent(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisManager &AM) {
+  Loop *L1 = LPair.first;
+  Loop *L2 = LPair.second;
+
+  BasicBlock *L1Exit = nullptr;
+  BasicBlock *L2Header = L2->getHeader();
+
+  // Determina l'uscita del primo loop
+  SmallVector<BasicBlock *, 4> L1ExitBlocks;
+  L1->getExitBlocks(L1ExitBlocks);
+
+  // Caso 1: entrambi sono guarded
+  if (L1->isGuarded() && L2->isGuarded()) {
+    BasicBlock *L1Guard = L1->getLoopGuardBranch()->getParent();
+    BasicBlock *L2Guard = L2->getLoopGuardBranch()->getParent();
+    for (auto *Succ : successors(L1Guard)) {
+      if (Succ == L2Guard)
         return true;
-      }
     }
   }
+  // Caso 2: nessuno dei due è guarded
+  else if (!L1->isGuarded() && !L2->isGuarded() && L1->isLoopSimplifyForm() && L2->isLoopSimplifyForm()) { 
+    for (BasicBlock *Exit : L1ExitBlocks) {
+      if (Exit == L2->getLoopPreheader())
+        return true;
+    }
+  }
+
   return false;
 }
+
 bool isDomPostDom(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisManager &AM) {
   DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
   PostDominatorTree &PDT = AM.getResult<PostDominatorTreeAnalysis>(F);
-  BasicBlock *FirstExit = LPair.first->getExitBlock();
-  BasicBlock *SecondEntry = getEntryPoint(LPair.second);
 
-  if (FirstExit && SecondEntry) {
-    return DT.dominates(FirstExit, SecondEntry) && PDT.dominates(SecondEntry, FirstExit);
+  // Determina l'entry del secondo loop
+  BasicBlock *SecondEntry = LPair.second->isGuarded()
+      ? LPair.second->getLoopGuardBranch()->getParent()
+      : LPair.second->getLoopPreheader();
+
+  if (!SecondEntry)
+    return false; // non possiamo analizzare senza entry
+
+  // Prova prima con un’unica exit
+  if (BasicBlock *FirstExit = LPair.first->getExitBlock()) {
+    return DT.dominates(FirstExit, SecondEntry) &&
+           PDT.dominates(SecondEntry, FirstExit);
   }
+
+  // Più exit: controlla se almeno una soddisfa la condizione
+  SmallVector<BasicBlock *, 4> ExitBlocks;
+  LPair.first->getExitBlocks(ExitBlocks);
+  for (BasicBlock *Exit : ExitBlocks) {
+    if (DT.dominates(Exit, SecondEntry) &&
+        PDT.dominates(SecondEntry, Exit)) {
+      return true;
+    }
+  }
+
   return false;
 }
+
+std::set<std::pair<Loop*, Loop*>> getLoopCandidates(Function &F, FunctionAnalysisManager &AM) {
+  LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
+  std::set<std::pair<Loop*, Loop*>> LoopCandidates;
+  Loop *LastGood = nullptr;
+
+  for (Loop *L : LI.getLoopsInPreorder()) {
+    if (!L->isInnermost())
+      continue;
+
+    if (LastGood) {
+
+      if (!isLoopAdjacent({LastGood, L}, F, AM)) {
+        continue;
+      }
+
+      if (isDomPostDom({LastGood, L}, F, AM)) {
+        LoopCandidates.insert(std::make_pair(LastGood, L));
+        LastGood = nullptr;
+        continue;
+      }
+    }
+    LastGood = L;
+  }
+  return LoopCandidates;
+}
+
+
 struct TestPass: PassInfoMixin<TestPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
     std::set<std::pair<Loop*,Loop*>> LI = getLoopCandidates(F,AM);
     
-    for (auto &LPair : LI) {
-      if(isLoopAdjacent(LPair,F,AM) && isDomPostDom(LPair,F,AM)){
-        //TODO: fusione
-      }
-    }
     
   	return PreservedAnalyses::all();
 }
