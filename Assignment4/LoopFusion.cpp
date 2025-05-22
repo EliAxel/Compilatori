@@ -166,19 +166,15 @@ const SCEVConstant* getConstantStart(const SCEV *S) {
 }
 // Continuo della funzione "hasNegativeDistance": Date due istruzioni, ne calcola la distanza partendo
 // dalle store e load.
-bool isThereNegativeDistance(Instruction &I1, Instruction &I2, ScalarEvolution &SE){
+bool isThereNegativeDistance(StoreInst *I1, LoadInst *I2, ScalarEvolution &SE){
   Value *PtrSt;
   Value *PtrLd;
 
-  // Dalle istruzioni ottengo ottengo i puntatori delle rispettive store e load
-  if (isa<StoreInst>(I1)){
-    auto *Store = cast<StoreInst>(&I1);
-    PtrSt = Store->getPointerOperand();
-  }
-  if (isa<LoadInst>(I2)){
-    auto *Load = cast<LoadInst>(&I2);
-    PtrLd = Load->getPointerOperand();
-  }
+  // Ottengo i puntatori delle rispettive store e load
+  auto *Store = I1;
+  PtrSt = Store->getPointerOperand();
+  auto *Load = I2;
+  PtrLd = Load->getPointerOperand();
 
   // Dai loro puntatori, ne traggo il loro n-esimo operando, ovvero l'offset di salto
   auto *GEPst = dyn_cast<GetElementPtrInst>(PtrSt);
@@ -219,9 +215,11 @@ bool hasNegativeDistance(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManage
           
           for(auto &I2:*BB2){
             if(isa<LoadInst>(I2)){
-              auto D = DI.depends(&I1,&I2,true);         // Se le due store e load dipendono tra di loro (ovvero accedono alla stessa memoria)
-              if(D && isThereNegativeDistance(I1,I2,SE)) // allora si può controllare se la loro distanza è negativa, in caso positivo la
-                return true;                             // Loop Fusion non si può fare.
+              auto *Store = cast<StoreInst>(&I1);
+              auto *Load = cast<LoadInst>(&I2);
+              auto D = DI.depends(&I1,&I2,true);              // Se le due store e load dipendono tra di loro (ovvero accedono alla stessa memoria)
+              if(D && isThereNegativeDistance(Store,Load,SE)) // allora si può controllare se la loro distanza è negativa, in caso positivo la
+                return true;                                  // Loop Fusion non si può fare.
             }
           }          
         }
@@ -333,7 +331,6 @@ struct TestPass: PassInfoMixin<TestPass> {
     for(auto &L : LI){
       if(haveSameTripCount(L.first,L.second,F,AM) && !hasNegativeDistance(L.first,L.second,F,AM)){
         fuseLoops(L,F);
-        errs() << "Loop fusion" << "\n";
       } 
     }
   	return PreservedAnalyses::all();
