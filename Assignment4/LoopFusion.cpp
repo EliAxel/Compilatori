@@ -41,7 +41,7 @@ bool isLoopAdjacent(std::pair<Loop*, Loop*> LPair) {
   SmallVector<BasicBlock *, 4> L1ExitBlocks;
   L1->getExitBlocks(L1ExitBlocks);
 
-  // Caso 1: entrambi sono guarded
+  // Caso 1: entrambi i loop sono guarded
   if (L1->isGuarded() && L2->isGuarded()) {
     BranchInst* L1Grd = L1->getLoopGuardBranch();
     BranchInst* L2Grd = L2->getLoopGuardBranch();
@@ -55,6 +55,8 @@ bool isLoopAdjacent(std::pair<Loop*, Loop*> LPair) {
     Value* cond1 = L1Grd->getCondition();
     Value* cond2 = L2Grd->getCondition();
     
+    // Vero se le condizioni di entrambe le guardie sono uguali e se 
+    // un successore della guardia è l'altra guardia
     if (areEquivalentConds(cond1,cond2)){
       for (auto *Succ : successors(L1Guard)) {
         if (Succ == L2Guard){
@@ -63,7 +65,8 @@ bool isLoopAdjacent(std::pair<Loop*, Loop*> LPair) {
       }
     }
   }
-  // Caso 2: nessuno dei due è guarded
+  // Caso 2: nessuno dei due è guarded (i loop devono essere in formato Simplified)
+  // Inoltre l'exitblock del primo deve essere il preheader del secondo
   else if (!L1->isGuarded() && !L2->isGuarded() && L1->isLoopSimplifyForm() && L2->isLoopSimplifyForm()) { 
     for (BasicBlock *Exit : L1ExitBlocks) {
       if (Exit == L2->getLoopPreheader())
@@ -73,7 +76,7 @@ bool isLoopAdjacent(std::pair<Loop*, Loop*> LPair) {
 
   return false;
 }
-
+// Controlla se fra i due loop cè dominanza e postdominanza
 bool isDomPostDom(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisManager &AM) {
   DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
   PostDominatorTree &PDT = AM.getResult<PostDominatorTreeAnalysis>(F);
@@ -84,15 +87,15 @@ bool isDomPostDom(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisMa
       : LPair.second->getLoopPreheader();
 
   if (!SecondEntry)
-    return false; // non possiamo analizzare senza entry
+    return false;
 
-  // Prova prima con un’unica exit
+  // Controllo del primo loop con un singolo exitblock (restituisce nullptr se non è unico)
   if (BasicBlock *FirstExit = LPair.first->getExitBlock()) {
     return DT.dominates(FirstExit, SecondEntry) &&
            PDT.dominates(SecondEntry, FirstExit);
   }
 
-  // Più exit: controlla se almeno una soddisfa la condizione
+  // Controlla se almeno una exit del loop soddisfa la condizione
   SmallVector<BasicBlock *, 4> ExitBlocks;
   LPair.first->getExitBlocks(ExitBlocks);
   for (BasicBlock *Exit : ExitBlocks) {
@@ -104,24 +107,30 @@ bool isDomPostDom(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisMa
 
   return false;
 }
-
+// Restituisce un insieme di paia di loops, il primo è il loop "sopra", il secondo il loop "sotto".
+// I loop candidati sono quei loop che insieme soddisfano l'adiacenza e la dominanza e post dominanza.
+// Il risultato finale è un insieme di coppie di loop pronti per i controlli successivi
 std::set<std::pair<Loop*, Loop*>> getLoopCandidates(Function &F, FunctionAnalysisManager &AM) {
   LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
   std::set<std::pair<Loop*, Loop*>> LoopCandidates;
   Loop *LastGood = nullptr;
 
+  // Guardando i loop in depth first...
   for (Loop *L : LI.getLoopsInPreorder()) {
-    if (!L->isInnermost())
+    // ...se il loop non è una foglia continua la discesa
+    if (!L->isInnermost()){
+      LastGood = nullptr;
       continue;
+    }
 
-    if (LastGood) {
-
-      if (!isLoopAdjacent({LastGood, L})) {
+    if (LastGood) { // LastGood è la foglia sibling al loop corrente
+      if (!isLoopAdjacent({LastGood, L})) { // Se il loop corrente non è adiacente con quello precedente
+        LastGood = nullptr;                 // allora sia questo loop che il precedente sono scartati
         continue;
       }
 
-      if (isDomPostDom({LastGood, L}, F, AM)) {
-        LoopCandidates.insert(std::make_pair(LastGood, L));
+      if (isDomPostDom({LastGood, L}, F, AM)) {             // Se il loop corrente soddisfa entrambi le condizioni
+        LoopCandidates.insert(std::make_pair(LastGood, L)); // allora il paio e creato e LastGood è indisponibile
         LastGood = nullptr;
         continue;
       }
@@ -130,7 +139,8 @@ std::set<std::pair<Loop*, Loop*>> getLoopCandidates(Function &F, FunctionAnalysi
   }
   return LoopCandidates;
 }
-
+// Controlla che i due loops abbiano lo stesso trip count (per semplicità si controllano solo i loop canonici, ovvero
+// non si controllano i casi tipo int i = 0; i < 10 con j = 4; j < 14
 bool haveSameTripCount(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManager &AM) {
   ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
   const SCEV *C1 = SE.getBackedgeTakenCount(L1);
@@ -142,21 +152,25 @@ bool haveSameTripCount(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManager 
   if(L1->getCanonicalInductionVariable() && L2->getCanonicalInductionVariable())
     return C1 == C2;
   
-  return false;
+  return false; // Se almeno uno dei due loop non è canonico, si assume in modo conservativo che non siano compatibili
 }
-
+// Cerca ricorsivamente di trovare la distanza fra due induzioni (il calcolo fra le distanze di due SCEV fra loop diversi
+// necessita di una visita ricorsiva)
 const SCEVConstant* getConstantStart(const SCEV *S) {
-    if (auto *Const = dyn_cast<SCEVConstant>(S)) {
+    if (auto *Const = dyn_cast<SCEVConstant>(S)) { // Caso base: è una costante e l'induzione è stata trovata
         return Const;
-    } else if (auto *AddRec = dyn_cast<SCEVAddRecExpr>(S)) {
+    } else if (auto *AddRec = dyn_cast<SCEVAddRecExpr>(S)) { // Caso ricorsivo
         return getConstantStart(AddRec->getStart());
     }
-    return nullptr; // non è costante né addrec
+    return nullptr; // non è costante né AddRecExpr
 }
-
+// Continuo della funzione "hasNegativeDistance": Date due istruzioni, ne calcola la distanza partendo
+// dalle store e load.
 bool isThereNegativeDistance(Instruction &I1, Instruction &I2, ScalarEvolution &SE){
   Value *PtrSt;
   Value *PtrLd;
+
+  // Dalle istruzioni ottengo ottengo i puntatori delle rispettive store e load
   if (isa<StoreInst>(I1)){
     auto *Store = cast<StoreInst>(&I1);
     PtrSt = Store->getPointerOperand();
@@ -165,18 +179,19 @@ bool isThereNegativeDistance(Instruction &I1, Instruction &I2, ScalarEvolution &
     auto *Load = cast<LoadInst>(&I2);
     PtrLd = Load->getPointerOperand();
   }
+
+  // Dai loro puntatori, ne traggo il loro n-esimo operando, ovvero l'offset di salto
   auto *GEPst = dyn_cast<GetElementPtrInst>(PtrSt);
   Value *IndexSt = GEPst->getOperand(GEPst->getNumOperands() - 1); 
-
   auto *GEPld = dyn_cast<GetElementPtrInst>(PtrLd);
   Value *IndexLd = GEPld->getOperand(GEPld->getNumOperands() - 1);
 
   const SCEV *S1 = SE.getSCEV(IndexSt);
   const SCEV *S2 = SE.getSCEV(IndexLd);
 
-  // Se è una costante negativa → distanza negativa
+  // Se è una costante negativa allora la distanza è negativa
   const SCEV *distance = SE.getMinusSCEV(S1, S2);
-  // Caso 2: differenza con AddRecExpr
+  // Bisogna ricercare ricorsivamente il valore costante della distanza
   if (auto *AddRec = dyn_cast<SCEVAddRecExpr>(distance)) {
     const SCEVConstant *ConstStart = getConstantStart(AddRec->getStart());
     if (ConstStart) {
@@ -184,12 +199,14 @@ bool isThereNegativeDistance(Instruction &I1, Instruction &I2, ScalarEvolution &
       return startVal < 0;
     }
   }
-  return true;
+  return true; // Conservativamente dice che la distanza è negativa
 }
-
+// Controlla se la distanza di tutte le istruzioni dei due loop è negativa e se in caso contrario
+// ritorna true. Questa funzione deve essere usata solo se "hasSameTripCount" ha avuto esito positivo.
 bool hasNegativeDistance(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManager &AM) {
   ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
   DependenceInfo &DI = AM.getResult<DependenceAnalysis>(F);
+  
   for(auto &BB1 : L1->getBlocks()){ 
     if(BB1 == L1->getHeader() || BB1 == L1->getLoopPreheader())
       continue;
@@ -302,17 +319,6 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
   L2Header->removeFromParent();
   L2Latch->removeFromParent();
 }
-void exits(Function &F) {
-  // Inserisce un metadata di tipo 'llvm.function.flags' come commento custom
-  const std::string &Comment = "Nothing_changed";
-  LLVMContext &Ctx = F.getContext();
-  Metadata *Vals[] = {
-      MDString::get(Ctx, Comment),
-      MDString::get(Ctx, Comment)
-  };
-  MDNode *Node = MDNode::get(Ctx, Vals);
-  F.setMetadata(Comment, Node);
-}
 
 struct TestPass: PassInfoMixin<TestPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
@@ -321,7 +327,8 @@ struct TestPass: PassInfoMixin<TestPass> {
     for(auto &L : LI){
       if(haveSameTripCount(L.first,L.second,F,AM) && !hasNegativeDistance(L.first,L.second,F,AM)){
         fuseLoops(L,F);
-      } else exits(F);
+        errs() << "Loop fusion" << "\n";
+      } 
     }
   	return PreservedAnalyses::all();
   }
