@@ -206,23 +206,22 @@ bool isThereNegativeDistance(Instruction &I1, Instruction &I2, ScalarEvolution &
 bool hasNegativeDistance(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManager &AM) {
   ScalarEvolution &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
   DependenceInfo &DI = AM.getResult<DependenceAnalysis>(F);
-  
+
   for(auto &BB1 : L1->getBlocks()){ 
-    if(BB1 == L1->getHeader() || BB1 == L1->getLoopPreheader())
+    if(BB1 == L1->getHeader() || BB1 == L1->getLoopPreheader() || BB1 == L1->getLoopLatch()) // Solo i blocchi del body
       continue;
 
     for(auto &I1:*BB1){
       if(isa<StoreInst>(I1)){
         for(auto &BB2 : L2->getBlocks()){
-          if(BB2 == L2->getHeader() || BB2 == L2->getLoopPreheader())
+          if(BB2 == L2->getHeader() || BB2 == L2->getLoopPreheader() || BB2 == L1->getLoopLatch()) // Solo i blocchi del body
             continue;
           
           for(auto &I2:*BB2){
             if(isa<LoadInst>(I2)){
-              auto D = DI.depends(&I1,&I2,true);
-              if(D){
-                return isThereNegativeDistance(I1,I2,SE);
-              }
+              auto D = DI.depends(&I1,&I2,true);         // Se le due store e load dipendono tra di loro (ovvero accedono alla stessa memoria)
+              if(D && isThereNegativeDistance(I1,I2,SE)) // allora si può controllare se la loro distanza è negativa, in caso positivo la
+                return true;                             // Loop Fusion non si può fare.
             }
           }          
         }
@@ -231,21 +230,24 @@ bool hasNegativeDistance(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManage
   }
   return false;
 }
-
+// Fusione dei due loop: Utilizzando il Builder con contesto la funzione in ingresso, vengono creati i vari branch
+// condizionali e non condizionali manualmente e vengono piazzati al posto dei branch precedenti.
 void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
   IRBuilder<> Builder(F.getContext());
   Loop *L1 = LPair.first;
   Loop *L2 = LPair.second;
 
+  // Calcolo preventivo di tutti i blocchi dei loop
   BasicBlock *L2Preheader = L2->getLoopPreheader();
   BasicBlock *L1Header = L1->getHeader();
   BasicBlock *L2Header = L2->getHeader();
   BasicBlock *L1Latch = L1->getLoopLatch();
   BasicBlock *L2Latch = L2->getLoopLatch();
   BasicBlock *L2Exit = L2->getExitBlock();
-  if(!L2Exit)
+  if(!L2Exit) // Si suppone che il secondo loop abbia una sola uscita per semplicità
     return;
 
+  // Calcolo del body del primo loop
   BasicBlock *L1BodyStart = nullptr;
   for (auto *Succ : successors(L1Header)) {
     if (L1->contains(Succ)) {
@@ -253,8 +255,9 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
       break;
     }
   }
-  BasicBlock *L1BodyEnd = L1Latch->getSinglePredecessor();
+  BasicBlock *L1BodyEnd = L1Latch->getSinglePredecessor(); // Il latch ha sempre uno e un solo predecessore
 
+  // Calcolo del body del secondo loop
   BasicBlock *L2BodyStart = nullptr;
   for (auto *Succ : successors(L2Header)) {
     if (L2->contains(Succ)) {
@@ -262,16 +265,19 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
       break;
     }
   }
-  BasicBlock *L2BodyEnd = L2Latch->getSinglePredecessor();
+  BasicBlock *L2BodyEnd = L2Latch->getSinglePredecessor(); // Il latch ha sempre uno e un solo predecessore
 
-  if(!L1BodyStart || !L1BodyEnd || !L2BodyStart || !L2BodyEnd)
+  if(!L1BodyStart || !L1BodyEnd || !L2BodyStart || !L2BodyEnd) // Se qualsiasi parte del body non è presente la funzione esce
     return;
   
+  // Calcolo dei vari branch dei blocchi interessati
   Instruction *L1BrBodyExit = L1BodyEnd->getTerminator();
   Instruction *L1BrHeader = L1Header->getTerminator();
   Instruction *L2BrBodyExit = L2BodyEnd->getTerminator();
   Instruction *L2BrHeader = L2Header->getTerminator();
   
+  // Sostituzione della variabile d'induzione del secondo loop con quella del primo loop.
+  // Si sottointende che entrambi i loop siano canonici come già verificato in "haveSameTripCount".
   L2->getCanonicalInductionVariable()->replaceAllUsesWith(L1->getCanonicalInductionVariable());
   //
   // FUSIONE L1 BODY CON L2 BODY
@@ -313,13 +319,13 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
   Builder.CreateBr(L2Latch);
   L2BrHeader->eraseFromParent();
   //
-  // RIMOZIONE PRE-HEADER, HEADER E LATCH DI L2
+  // RIMOZIONE PRE-HEADER, HEADER E LATCH DI L2 (pulizia)
   //
   L2Preheader->removeFromParent();
   L2Header->removeFromParent();
   L2Latch->removeFromParent();
 }
-
+// Generico passo di Loop Fusion NON iterativo (itera solamente una volta)
 struct TestPass: PassInfoMixin<TestPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
     std::set<std::pair<Loop*,Loop*>> LI = getLoopCandidates(F,AM);
