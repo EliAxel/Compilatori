@@ -291,7 +291,6 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
   L2Preheader->eraseFromParent();
   L2Header->eraseFromParent();
   L2Latch->eraseFromParent();
-  errs() << "fatto\n";
 }
 // Generico passo di Loop Fusion NON iterativo (itera solamente una volta)
 struct TestPass: PassInfoMixin<TestPass> {
