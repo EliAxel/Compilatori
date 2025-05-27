@@ -81,6 +81,14 @@ bool isDomPostDom(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisMa
   DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
   PostDominatorTree &PDT = AM.getResult<PostDominatorTreeAnalysis>(F);
 
+  // Determina l'entry del primo loop
+  BasicBlock *FirstEntry = LPair.first->isGuarded()
+      ? LPair.first->getLoopGuardBranch()->getParent()
+      : LPair.first->getLoopPreheader();
+  
+  if (!FirstEntry)
+    return false;
+
   // Determina l'entry del secondo loop
   BasicBlock *SecondEntry = LPair.second->isGuarded()
       ? LPair.second->getLoopGuardBranch()->getParent()
@@ -89,23 +97,7 @@ bool isDomPostDom(std::pair<Loop*, Loop*> LPair, Function &F, FunctionAnalysisMa
   if (!SecondEntry)
     return false;
 
-  // Controllo del primo loop con un singolo exitblock (restituisce nullptr se non è unico)
-  if (BasicBlock *FirstExit = LPair.first->getExitBlock()) {
-    return DT.dominates(FirstExit, SecondEntry) &&
-           PDT.dominates(SecondEntry, FirstExit);
-  }
-
-  // Controlla se almeno una exit del loop soddisfa la condizione
-  SmallVector<BasicBlock *, 4> ExitBlocks;
-  LPair.first->getExitBlocks(ExitBlocks);
-  for (BasicBlock *Exit : ExitBlocks) {
-    if (DT.dominates(Exit, SecondEntry) &&
-        PDT.dominates(SecondEntry, Exit)) {
-      return true;
-    }
-  }
-
-  return false;
+  return DT.dominates(FirstEntry, SecondEntry) && PDT.dominates(SecondEntry, FirstEntry);
 }
 // Restituisce un insieme di paia di loops, il primo è il loop "sopra", il secondo il loop "sotto".
 // I loop candidati sono quei loop che insieme soddisfano l'adiacenza e la dominanza e post dominanza.
@@ -231,21 +223,19 @@ bool hasNegativeDistance(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManage
 // Fusione dei due loop: Utilizzando il Builder con contesto la funzione in ingresso, vengono creati i vari branch
 // condizionali e non condizionali manualmente e vengono piazzati al posto dei branch precedenti.
 void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
-  IRBuilder<> Builder(F.getContext());
   Loop *L1 = LPair.first;
   Loop *L2 = LPair.second;
 
-  // Calcolo preventivo di tutti i blocchi dei loop
+  // Ottengo preventivamente tutti i blocchi utili
   BasicBlock *L2Preheader = L2->getLoopPreheader();
   BasicBlock *L1Header = L1->getHeader();
   BasicBlock *L2Header = L2->getHeader();
   BasicBlock *L1Latch = L1->getLoopLatch();
   BasicBlock *L2Latch = L2->getLoopLatch();
   BasicBlock *L2Exit = L2->getExitBlock();
-  if(!L2Exit) // Si suppone che il secondo loop abbia una sola uscita per semplicità
+  if (!L2Exit)
     return;
 
-  // Calcolo del body del primo loop
   BasicBlock *L1BodyStart = nullptr;
   for (auto *Succ : successors(L1Header)) {
     if (L1->contains(Succ)) {
@@ -253,9 +243,8 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
       break;
     }
   }
-  BasicBlock *L1BodyEnd = L1Latch->getSinglePredecessor(); // Il latch ha sempre uno e un solo predecessore
+  BasicBlock *L1BodyEnd = L1Latch->getSinglePredecessor();
 
-  // Calcolo del body del secondo loop
   BasicBlock *L2BodyStart = nullptr;
   for (auto *Succ : successors(L2Header)) {
     if (L2->contains(Succ)) {
@@ -263,65 +252,46 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
       break;
     }
   }
-  BasicBlock *L2BodyEnd = L2Latch->getSinglePredecessor(); // Il latch ha sempre uno e un solo predecessore
+  BasicBlock *L2BodyEnd = L2Latch->getSinglePredecessor();
 
-  if(!L1BodyStart || !L1BodyEnd || !L2BodyStart || !L2BodyEnd) // Se qualsiasi parte del body non è presente la funzione esce
+  // Ottengo tutte le entrate e uscite dal body
+  if (!L1BodyStart || !L1BodyEnd || !L2BodyStart || !L2BodyEnd)
     return;
-  
-  // Calcolo dei vari branch dei blocchi interessati
+
+  // Ottengo i terminatori utili
   Instruction *L1BrBodyExit = L1BodyEnd->getTerminator();
   Instruction *L1BrHeader = L1Header->getTerminator();
   Instruction *L2BrBodyExit = L2BodyEnd->getTerminator();
   Instruction *L2BrHeader = L2Header->getTerminator();
-  
-  // Sostituzione della variabile d'induzione del secondo loop con quella del primo loop.
-  // Si sottointende che entrambi i loop siano canonici come già verificato in "haveSameTripCount".
+
+  // Sostituzione variabile d’induzione
   L2->getCanonicalInductionVariable()->replaceAllUsesWith(L1->getCanonicalInductionVariable());
-  //
-  // FUSIONE L1 BODY CON L2 BODY
-  //
-  Builder.SetInsertPoint(L1BodyEnd);
+
+  // Fusione L1 body con L2 body
   if (auto *Br = dyn_cast<BranchInst>(L1BrBodyExit)) {
-    if (Br->isConditional()) {
-      Builder.CreateCondBr(Br->getCondition(), L2BodyStart, Br->getSuccessor(1));
-    } else {
-      Builder.CreateBr(L2BodyStart);
-    }
-  }
-  L1BrBodyExit->eraseFromParent();
-  //
-  // FUSIONE L2 BODY CON L1 LATCH
-  //
-  Builder.SetInsertPoint(L2BodyEnd);
+    L1BrBodyExit->setSuccessor(0, L2BodyStart);
+  } else return;
+
+  // Fusione L2 body con L1 latch
   if (auto *Br = dyn_cast<BranchInst>(L2BrBodyExit)) {
-    if (Br->isConditional()) {
-      Builder.CreateCondBr(Br->getCondition(), L1Latch, Br->getSuccessor(1));
-    } else {
-      Builder.CreateBr(L1Latch);
-    }
-  }
-  L2BrBodyExit->eraseFromParent();
-  //
-  // FUSIONE L1 HEADER CON L2 EXIT
-  //
-  Builder.SetInsertPoint(L1BrHeader);
-  auto *Br = dyn_cast<BranchInst>(L1BrHeader);
-  if (Br->isConditional()) {
-    Builder.CreateCondBr(Br->getCondition(), Br->getSuccessor(0), L2Exit);
-  }
-  L1BrHeader->eraseFromParent();
-  //
-  // FUSIONE L2 HEADER CON L2 LATCH
-  //
-  Builder.SetInsertPoint(L2BrHeader);
-  Builder.CreateBr(L2Latch);
-  L2BrHeader->eraseFromParent();
-  //
-  // RIMOZIONE PRE-HEADER, HEADER E LATCH DI L2 (pulizia)
-  //
-  L2Preheader->removeFromParent();
-  L2Header->removeFromParent();
-  L2Latch->removeFromParent();
+    L2BrBodyExit->setSuccessor(0, L1Latch);
+  } else return;
+
+  // Fusione L1 header con L2 exit
+  if (auto *Br = dyn_cast<BranchInst>(L1BrHeader)) {
+    Br->setSuccessor(1, L2Exit);
+  } else return;
+
+  // Fusione L2 header con L2 latch
+  if (auto *Br = dyn_cast<BranchInst>(L2BrHeader)) {
+    Br->setSuccessor(0, L2Latch);
+  } else return;
+
+  // Pulizia codice
+  L2Preheader->eraseFromParent();
+  L2Header->eraseFromParent();
+  L2Latch->eraseFromParent();
+  errs() << "fatto\n";
 }
 // Generico passo di Loop Fusion NON iterativo (itera solamente una volta)
 struct TestPass: PassInfoMixin<TestPass> {
@@ -333,7 +303,7 @@ struct TestPass: PassInfoMixin<TestPass> {
         fuseLoops(L,F);
       } 
     }
-  	return PreservedAnalyses::all();
+  	return PreservedAnalyses::none();
   }
   static bool isRequired() { return true; }
 };
