@@ -189,7 +189,7 @@ struct TestPass: PassInfoMixin<TestPass> {
         }
       }
     }
-  	return PreservedAnalyses::all();
+  	return PreservedAnalyses::none();
 }
 
 
