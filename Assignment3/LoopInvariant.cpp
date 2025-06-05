@@ -60,18 +60,32 @@ bool dominatesAllUses(Instruction *I, DominatorTree &DT, Loop *L) {
     // se l'uso è un'istruzione
     if (Instruction *UserInst = dyn_cast<Instruction>(U)) {
       // se l'uso è in un blocco che non è nel loop il controllo è superfluo
-      if (!L->contains(UserInst->getParent())) {
+      if (!L->contains(UserInst->getParent()))
         continue;
-      }
+
+      // se l'user è un PHINode, allora bisogna controllare se il parent del valore incoming
+      // nel phi domina il blocco incoming nel phi, altrimenti spostare il valore potrebbe
+      // causare l'utilizzo di una definizione non ancora eseguita (violazione SSA).
+      if (PHINode *PN = dyn_cast<PHINode>(UserInst)) {
+        // Controlla ogni valore in ingresso
+        for (unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
+          if (PN->getIncomingValue(i) == I) {
+            BasicBlock *IncomingBB = PN->getIncomingBlock(i);
+            if (!DT.dominates(I->getParent(), IncomingBB))
+              return false;
+          }
+        }
+      } else {
         // se invece è interno e l'istruzione loop invariant non è dominata dall'istruzione
         // allora l'istruzione loop invariant non è spostabile
-      if (!DT.dominates(I, UserInst)) {
-        return false;
+        if (!DT.dominates(I, UserInst))
+          return false;
       }
     }
   }
   return true;
 }
+
 // funzione che controlla se l'istruzione è dead al di fuori del loop
 bool isDeadAfterLoop(Instruction *I, Loop *L) {
   for (User *U : I->users()) {
