@@ -11,7 +11,6 @@
 
 using namespace llvm;
 namespace {
-
 //Controlla se le condizioni delle guardie sono identiche
 bool areEquivalentConds(Value *V1, Value *V2) {
   auto *IC1 = dyn_cast<ICmpInst>(V1);
@@ -25,7 +24,7 @@ bool areEquivalentConds(Value *V1, Value *V2) {
   // Controllo se gli operandi sono uguali anche nel caso fossero commutativi (A == B e B == A)
   return (IC1->getOperand(0) == IC2->getOperand(0) &&
           IC1->getOperand(1) == IC2->getOperand(1)) ||
-         (IC1->isCommutative() &&
+         (IC1->isCommutative() && IC2->isCommutative() &&
           IC1->getOperand(0) == IC2->getOperand(1) &&
           IC1->getOperand(1) == IC2->getOperand(0));
 }
@@ -117,12 +116,12 @@ std::set<std::pair<Loop*, Loop*>> getLoopCandidates(Function &F, FunctionAnalysi
 
     if (LastGood) { // LastGood è la foglia sibling al loop corrente
       if (!isLoopAdjacent({LastGood, L})) { // Se il loop corrente non è adiacente con quello precedente
-        LastGood = nullptr;                 // allora sia questo loop che il precedente sono scartati
+        LastGood = L;                       // allora il loop precedente è scartato
         continue;
       }
 
-      if (isDomPostDom({LastGood, L}, F, AM)) {             // Se il loop corrente soddisfa entrambi le condizioni
-        LoopCandidates.insert(std::make_pair(LastGood, L)); // allora il paio e creato e LastGood è indisponibile
+      if (isDomPostDom({LastGood, L}, F, AM)) {             // Se il loop corrente soddisfa entrambe le condizioni
+        LoopCandidates.insert(std::make_pair(LastGood, L)); // allora il paio è creato e LastGood è consumato
         LastGood = nullptr;
         continue;
       }
@@ -296,13 +295,17 @@ void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
 struct TestPass: PassInfoMixin<TestPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
     std::set<std::pair<Loop*,Loop*>> LI = getLoopCandidates(F,AM);
+    bool anyChanges = false;
 
     for(auto &L : LI){
       if(haveSameTripCount(L.first,L.second,F,AM) && !hasNegativeDistance(L.first,L.second,F,AM)){
         fuseLoops(L,F);
+        errs() << "loop fusi\n";
+        anyChanges = true;
       } 
     }
-  	return PreservedAnalyses::none();
+  	if(anyChanges) return PreservedAnalyses::none();
+    else return PreservedAnalyses::all();
   }
   static bool isRequired() { return true; }
 };
