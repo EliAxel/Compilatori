@@ -20,6 +20,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/Dominators.h"
 
 using namespace llvm;
 
@@ -38,11 +39,13 @@ struct MultiInstOptimization: PassInfoMixin<MultiInstOptimization> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
     // il booleano changes serve per capire se ci sono stati cambiamenti e in caso positivo abilita nuovamente il while
     // per controllare se ci sono altre ottimizzazioni da fare
-    bool changes = true;
+    bool changes = false;
+    // mentre anyChanges tiene conto di ogni modifica
+    bool anyChanges = false;
     //ci spostiamo all'interno di ogni blocco base della funzione
     for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
       BasicBlock &BB = *B;
-      while(changes){
+      do{
         changes = false;
         //scorriamo tutte le istruzioni del blocco base
         for (auto I = BB.begin(), IE = --BB.end(); I != IE; ++I) {
@@ -58,9 +61,10 @@ struct MultiInstOptimization: PassInfoMixin<MultiInstOptimization> {
                 if ((BinOp1->getOpcode() == Instruction::Add && BinOp2->getOpcode() == Instruction::Sub) ||
                     (BinOp1->getOpcode() == Instruction::Sub && BinOp2->getOpcode() == Instruction::Add)) {
                     if (BinOp1 == BinOp2->getOperand(0) && BinOp1->getOperand(1) == BinOp2->getOperand(1)) {
-                        InstrNext.replaceAllUsesWith(BinOp1);
+                        InstrNext.replaceAllUsesWith(BinOp1->getOperand(0));
                         InstrNext.eraseFromParent();
                         changes = true;
+                        anyChanges = true;
                         break;
                     }
                 }
@@ -69,9 +73,14 @@ struct MultiInstOptimization: PassInfoMixin<MultiInstOptimization> {
             ++Next;
           }
         }
-      }
+      }while(changes);
     }
-  	return PreservedAnalyses::all();
+    if(anyChanges){
+      PreservedAnalyses PA;
+      PA.preserve<DominatorTreeAnalysis>();  // CFG non modificato
+      PA.preserve<LoopAnalysis>();           // Loops non toccati
+      return PA;
+    } else return PreservedAnalyses::all();
 }
 
 
