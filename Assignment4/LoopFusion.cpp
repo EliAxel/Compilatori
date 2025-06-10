@@ -219,8 +219,8 @@ bool hasNegativeDistance(Loop *L1, Loop *L2, Function &F, FunctionAnalysisManage
   }
   return false;
 }
-// Fusione dei due loop: Utilizzando il Builder con contesto la funzione in ingresso, vengono creati i vari branch
-// condizionali e non condizionali manualmente e vengono piazzati al posto dei branch precedenti.
+// Fusione dei due loop: Questa funzione si occupa solamente di fusioni fra due cicli for non guarded
+// con definizioni di variabili dead after loop.
 void fuseLoops(std::pair<Loop*, Loop*> LPair, Function &F) {
   Loop *L1 = LPair.first;
   Loop *L2 = LPair.second;
@@ -300,7 +300,6 @@ struct TestPass: PassInfoMixin<TestPass> {
     for(auto &L : LI){
       if(haveSameTripCount(L.first,L.second,F,AM) && !hasNegativeDistance(L.first,L.second,F,AM)){
         fuseLoops(L,F);
-        errs() << "loop fusi\n";
         anyChanges = true;
       } 
     }
