@@ -78,11 +78,11 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                   auto *ShiftInstr = BinaryOperator::Create(
                       Instruction::Shl, Instr.getOperand(0),
                       ConstantInt::get(Instr.getType(), Log2_32(ClosestPowerOf2)), "", &Instr);
-          
+
                   auto *AddInstr = BinaryOperator::Create(
                       Instruction::Add, ShiftInstr,
                       Instr.getOperand(0), "", &Instr);
-          
+
                   Instr.replaceAllUsesWith(AddInstr);
                   Instr.eraseFromParent();
                   changes = true;
@@ -94,10 +94,10 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                   auto *ShiftInstr = BinaryOperator::Create(
                       Instruction::Shl, Instr.getOperand(0),
                       ConstantInt::get(Instr.getType(), Log2_32(ClosestPowerOf2s)), "", &Instr);
-          
+
                   auto *SubInstr = BinaryOperator::Create(
                       Instruction::Sub,ShiftInstr ,Instr.getOperand(0) , "", &Instr);
-          
+
                   Instr.replaceAllUsesWith(SubInstr);
                   Instr.eraseFromParent();
                   changes = true;

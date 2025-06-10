@@ -64,8 +64,7 @@ bool dominatesAllUses(Instruction *I, DominatorTree &DT, Loop *L) {
         continue;
 
       // se l'user è un PHINode, allora bisogna controllare se il parent del valore incoming
-      // nel phi domina il blocco incoming nel phi, altrimenti spostare il valore potrebbe
-      // causare l'utilizzo di una definizione non ancora eseguita (violazione SSA).
+      // nel phi domina il blocco incoming nel phi del valore corrispondente, per definizione.
       if (PHINode *PN = dyn_cast<PHINode>(UserInst)) {
         // Controlla ogni valore in ingresso
         for (unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
@@ -76,7 +75,7 @@ bool dominatesAllUses(Instruction *I, DominatorTree &DT, Loop *L) {
           }
         }
       } else {
-        // se invece è interno e l'istruzione loop invariant non è dominata dall'istruzione
+        // se invece è interno al loop e l'istruzione loop invariant non è dominata dall'user
         // allora l'istruzione loop invariant non è spostabile
         if (!DT.dominates(I, UserInst))
           return false;
@@ -85,7 +84,6 @@ bool dominatesAllUses(Instruction *I, DominatorTree &DT, Loop *L) {
   }
   return true;
 }
-
 // funzione che controlla se l'istruzione è dead al di fuori del loop
 bool isDeadAfterLoop(Instruction *I, Loop *L) {
   for (User *U : I->users()) {
@@ -94,7 +92,7 @@ bool isDeadAfterLoop(Instruction *I, Loop *L) {
       if (!L->contains(UserBB)) {
         return false;
       }
-    }
+    } else return false;
   }
   return true;
 }
@@ -102,17 +100,17 @@ bool isDeadAfterLoop(Instruction *I, Loop *L) {
 bool isOperLoopInvariant(Value &V, Loop *L, DominatorTree &DT,
   std::set<Instruction*> &LoopInvariantInst,
   std::set<Instruction*> &isChecked) {
-  // Se è una costante o un argomento, è loop invariant
+  // Se l'operando è una costante o un argomento, è loop invariant
   if (isa<Constant>(&V) || isa<Argument>(&V)) {
     return true;
-  }  
-  // se non è un istruzione allora non è loop invariant
+  }
+  // se non è un'istruzione allora non viene considerato
   if (Instruction *Inst = dyn_cast<Instruction>(&V)) {
-    // Se non è dentro il loop, è considerata loop invariant
+    // Se non è dentro il loop, è considerato loop invariant
     if (!L->contains(Inst)) {
       return true;
     }
-    // Se già marcata come invariant, ritorna true
+    // Se già marcato come invariant, ritorna true
     if (LoopInvariantInst.count(Inst)) {
       return true;
     }
@@ -134,7 +132,7 @@ bool isOperLoopInvariant(Value &V, Loop *L, DominatorTree &DT,
 bool IsLoopInvariant(Instruction &I, Loop *L, DominatorTree &DT,
   std::set<Instruction*> &LoopInvariantInst,
   std::set<Instruction*> &isChecked) {
-  // Se non è sicura, non può essere loop invariant
+  // Se non è sicura, viene esclusa a priori
   if (!isASafeInstruction(&I)) {
     return false;
   }
@@ -146,8 +144,6 @@ bool IsLoopInvariant(Instruction &I, Loop *L, DominatorTree &DT,
   }
   return true;
 }
-
-
 // New PM implementation
 struct TestPass: PassInfoMixin<TestPass> {
   // Main entry point, takes IR unit to run the pass on (&F) and the
@@ -155,10 +151,10 @@ struct TestPass: PassInfoMixin<TestPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
     LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
     DominatorTree &DT = AM.getResult<DominatorTreeAnalysis>(F);
+    bool anyChanges = false;
 
     // esce immediatamente se non ci sono loop
     if(LI.empty()) {
-      errs() << "No loops in function: " << F.getName() << "\n";
       return PreservedAnalyses::all();
     }
     // per ogni loop della funzione
@@ -169,7 +165,7 @@ struct TestPass: PassInfoMixin<TestPass> {
       for(auto &BB : L->blocks()) {
         for(auto &I : *BB) {
           if(IsLoopInvariant(I, L, DT, LoopInvariantInst, isChecked) && dominatesAllUses(&I, DT, L)) {
-            LoopInvariantInst.insert(&I);            
+            LoopInvariantInst.insert(&I);
           }
         }
       }
@@ -181,7 +177,7 @@ struct TestPass: PassInfoMixin<TestPass> {
             ExitBlocks.insert(Succ);
             break;
           }
-        }        
+        }
       }
       // per ogni istruzione loop invariant controlla se domina tutti i blocchi di uscita
       // e se domina tutti i suoi usi
@@ -199,11 +195,13 @@ struct TestPass: PassInfoMixin<TestPass> {
           BasicBlock *Preheader = L->getLoopPreheader();
           if (Preheader) {
             I->moveBefore(Preheader->getTerminator());
+            anyChanges = true;
           }
         }
       }
     }
-  	return PreservedAnalyses::none();
+    if(anyChanges) return PreservedAnalyses::none();
+    else return PreservedAnalyses::all();
 }
 
 
