@@ -20,6 +20,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/Dominators.h"
 
 using namespace llvm;
 
@@ -38,11 +39,13 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
     // il booleano changes serve per capire se ci sono stati cambiamenti e in caso positivo abilita nuovamente il while
     // per controllare se ci sono altre ottimizzazioni da fare
-    bool changes = true;
+    bool changes = false;
+    // mentre anyChanges tiene conto di ogni modifica
+    bool anyChanges = false;
     // scorro tutti i blocchi base della funzione
     for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
       BasicBlock &BB = *B;
-      while(changes){
+      do{
         changes = false;
         //scorro tutte le istruzioni del blocco base
         for(auto I = BB.begin(), IE = BB.end(); I != IE; ++I) {
@@ -55,9 +58,10 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
               Instr.replaceAllUsesWith(BinaryOperator::Create(Instruction::Shl, Instr.getOperand(0), ConstantInt::get(Instr.getType(), Op1->getValue().logBase2()), "", &Instr));
               Instr.eraseFromParent();
               changes = true;
+              anyChanges = true;
               break;
               // se non è una diretta potenza di 2 controllo se il secondo operando è una costante e
-              // se è un numero che si può scrivere come somma di potenze di 2
+              // se è un numero che si può scrivere come somma di potenze di 2,
               // se è vero allora sostituisco la moltiplicazione con uno shift a sinistra e una somma
             } else if (auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
               if (Op1) {
@@ -82,9 +86,9 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                   Instr.replaceAllUsesWith(AddInstr);
                   Instr.eraseFromParent();
                   changes = true;
+                  anyChanges = true;
                   break;
-                  // se la differenza non è di uno controllo se il secondo operando è una costante e
-                  // se è un numero che si può scrivere come differenza di potenze di 2
+                  // se la differenza non è di uno controllo se è un numero che si può scrivere come differenza di potenze di 2,
                   // se è vero allora sostituisco la moltiplicazione con uno shift a sinistra e una sottrazione
                 } else if (Difference2 + 1 == 0){
                   auto *ShiftInstr = BinaryOperator::Create(
@@ -97,11 +101,13 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                   Instr.replaceAllUsesWith(SubInstr);
                   Instr.eraseFromParent();
                   changes = true;
+                  anyChanges = true;
                   break;
                 }
               }
             }
-            // se non è una moltiplicazione controllo se l'istruzione è una divisione e se il secondo operando è una costante e se è una potenza di 2
+            // se non è una moltiplicazione controllo se l'istruzione è una divisione e
+            // se il secondo operando è una costante e se è una potenza di 2,
             // se è vero allora sostituisco la divisione con uno shift aritmetico a destra
           } else if (Instr.getOpcode() == Instruction::SDiv){
             if(auto *Op1 = dyn_cast<ConstantInt>(Instr.getOperand(1))) {
@@ -109,14 +115,20 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
                 Instr.replaceAllUsesWith(BinaryOperator::Create(Instruction::AShr, Instr.getOperand(0), ConstantInt::get(Instr.getType(), Op1->getValue().logBase2()), "", &Instr));
                 Instr.eraseFromParent();
                 changes = true;
+                anyChanges = true;
                 break;
               }
             }
           } 
         }
-      }
+      }while(changes);
     }
-  	return PreservedAnalyses::all();
+  	if(anyChanges){
+      PreservedAnalyses PA;
+      PA.preserve<DominatorTreeAnalysis>();  // CFG non modificato
+      PA.preserve<LoopAnalysis>();           // Loops non toccati
+      return PA;
+    } else return PreservedAnalyses::all();
 }
 
 
@@ -132,12 +144,12 @@ struct StrenghtReduction: PassInfoMixin<StrenghtReduction> {
 // New PM Registration
 //-----------------------------------------------------------------------------
 llvm::PassPluginLibraryInfo getTestPassPluginInfo() {
-  return {LLVM_PLUGIN_API_VERSION, "StrenghtReduction", LLVM_VERSION_STRING,
+  return {LLVM_PLUGIN_API_VERSION, "StrengthReduction", LLVM_VERSION_STRING,
           [](PassBuilder &PB) {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
-                  if (Name == "strenght-reduction") {
+                  if (Name == "strength-reduction") {
                     FPM.addPass(StrenghtReduction());
                     return true;
                   }
