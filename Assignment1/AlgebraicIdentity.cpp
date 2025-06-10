@@ -20,6 +20,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/Dominators.h"
 
 using namespace llvm;
 
@@ -38,11 +39,13 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
     // il booleano changes serve per capire se ci sono stati cambiamenti e in caso positivo abilita nuovamente il while
     // per controllare se ci sono altre ottimizzazioni da fare
-    bool changes = true;
+    bool changes = false;
+    // mentre anyChanges tiene conto di ogni modifica
+    bool anyChanges = false;
     // ciclo for che scorre tutti i blocchi base della funzione
     for(auto B = F.begin(), BE = F.end(); B != BE; ++B) {
       BasicBlock &BB = *B;
-      while(changes){
+      do{
         changes = false;
         //ciclo for che scorre tutte le istruzioni del blocco base
         for(auto I = BB.begin(), IE = BB.end(); I != IE; ++I) {
@@ -55,6 +58,7 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
                 Instr.replaceAllUsesWith(Instr.getOperand(0));
                 Instr.eraseFromParent();
                 changes = true;
+                anyChanges = true;
                 break;
               }
             }
@@ -66,6 +70,7 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
                 Instr.replaceAllUsesWith(Instr.getOperand(0));
                 Instr.eraseFromParent();
                 changes = true;
+                anyChanges = true;
                 break;
               }
             }
@@ -77,6 +82,7 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
                 Instr.replaceAllUsesWith(Instr.getOperand(0));
                 Instr.eraseFromParent();
                 changes = true;
+                anyChanges = true;
                 break;
               }
             }
@@ -88,14 +94,20 @@ struct AlgebraicIdentity: PassInfoMixin<AlgebraicIdentity> {
                 Instr.replaceAllUsesWith(Instr.getOperand(0));
                 Instr.eraseFromParent();
                 changes = true;
+                anyChanges = true;
                 break;
               }
             }
           }
         }
-      }
+      }while(changes);
     }
-  	return PreservedAnalyses::all();
+    if(anyChanges){
+      PreservedAnalyses PA;
+      PA.preserve<DominatorTreeAnalysis>();  // CFG non modificato
+      PA.preserve<LoopAnalysis>();           // Loops non toccati
+      return PA;
+    } else return PreservedAnalyses::all();
 }
 
 
